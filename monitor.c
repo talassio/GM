@@ -34,7 +34,8 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <error.h>
-/* #include <string.h> */
+#include <getopt.h>
+#include <math.h>
 
 #define NAME "monitor"
 #define VERSION_MAJOR  1
@@ -47,12 +48,13 @@
 #define TRUE           1
 #define SPAN           15        /* seconds */
 
-unsigned long detect(char *, int);
+unsigned long detect(char *, int, short, int);
 
-int main() {
+int main(int argc, char *argv[]) {
         long loops;
         long lc;
         int rc;
+        int c;
         int size;
         int rectime = 180;
         snd_pcm_t *handle;
@@ -63,15 +65,86 @@ int main() {
         char *buffer;
         double atime = 0;
         double time_inc;
+        int span = SPAN;
         time_t curtime;
         unsigned long cnt, tcnt;
         unsigned long delta, delta_sum;
-        unsigned long CNT[SPAN] = { 0 };
+        unsigned long *CNT; /* [SPAN] = { 0 }; */
         double sectime;
         unsigned int seccnt;
-
+        short det_threshold = DET_THRESHOLD;
+        int det_skips = DET_SKIPS;
         printf("%s, version: %i.%i\n", NAME, VERSION_MAJOR, VERSION_MINOR);
-        printf("AM Sajo Castelli (c) 2015. Licensed under the GPL +3\nThis is free software with ABSOLUTELY NO WARRANTY.\n");
+        printf("AM Sajo Castelli (c) 2015. Licensed under the GPL 2\nThis is free software with ABSOLUTELY NO WARRANTY.\n\n");
+
+        static struct option long_options[] =
+        {
+          /* These options set a flag. */
+          {"time",            required_argument,   0, 't'}, /* default: 180 sec */
+          {"average-time",    required_argument,   0, 'A'}, /* default: 15 sec */
+          {"threshold",       required_argument,   0, 'T'}, /* default: -500, range 0, -32767 */
+          {"skips",           required_argument,   0, 'S'}, /* default: 3 frames */
+          {"help",            no_argument,         0, 'h'},
+          {0, 0, 0, 0}
+        };
+
+        while (1) {
+                int option_index = 0;
+
+                c = getopt_long (argc, argv, "t:A:T:S:h", long_options, &option_index);
+                if (c == -1) break;
+
+                switch (c) {
+                        case 'h':
+                                printf("help and usage:\n"
+                                "--time <sec>, -t <sec>          sets the recording time in seconds, default 180s\n"
+                                "--average-time <sec>, -A <sec>  sets the time window in seconds on which to average the counts, default 15s\n"
+                                "--threshold <int>, -T <int>     changes the discriminization level, range (-1 to -32767), default -500\n"
+                                "--skips <int>, -S <int>         number of frams to skip after detecting a particle, defaults to 3 frames\n");
+                                exit(EXIT_SUCCESS);
+                        case 't':
+                                rectime = atoi(optarg);
+                                if ( rectime <= 0 ) {
+                                        fprintf(stderr, "Error: recording time must be positive integer in seconds.\n");
+                                        exit(EXIT_FAILURE);
+                                }
+                                break;
+                        case 'T':
+                                det_threshold = (short)atoi(optarg);
+                                if ( det_threshold >= 0 ) {
+                                        fprintf(stderr, "Error: detector threshold must be negative integer between -1 and -32767.\n");
+                                        exit(EXIT_FAILURE);
+                                }
+                                break;
+
+                        case 'A':
+                                span = atof(optarg);
+                                if ( span <= 0 ) {
+                                        fprintf(stderr, "Error: average span window must be positive integer number greater than one.\n");
+                                        exit(EXIT_FAILURE);
+                                }
+                                break;
+                        case 'S':
+                                det_skips = (int)atoi(optarg);
+                                if ( det_skips <= 0 ) {
+                                        fprintf(stderr, "Error: number of frames to skip must be a positive integer.\n");
+                                        exit(EXIT_FAILURE);
+                                }
+                                break;
+                        case '?':
+                                fprintf(stderr, "Try %s --help\n", argv[0]);
+                                exit(EXIT_FAILURE);
+                        default:
+                                fprintf(stderr, "Error: unknown option \"%s\".\n", optarg);
+                                exit(EXIT_FAILURE);
+                }
+        }
+
+        CNT = (unsigned long *) calloc(sizeof(cnt), span);
+        if (CNT < 0) {
+                fprintf(stderr, "Error: unable to allocate %i block of memory.\n", span);
+                exit(EXIT_FAILURE);
+        }
 
         /* Open PCM device for recording (capture). */
         rc = snd_pcm_open(&handle, "default", SND_PCM_STREAM_CAPTURE, 0);
@@ -79,6 +152,11 @@ int main() {
                 fprintf(stderr, "Error: %s: unable to open pcm device: %s.\n", NAME, snd_strerror(rc));
                 exit(EXIT_FAILURE);
         }
+
+        printf("Working parameters:\n Recording time se to %i seconds\n"
+        " Average window time set to %i seconds\n"
+        " Detector threshold set to %i\n"
+        " Detector fram skip amount is %i frames\n\n", rectime, span, det_threshold, det_skips);
 
         /* Allocate a hardware parameters object. */
         snd_pcm_hw_params_alloca(&params);
@@ -144,16 +222,16 @@ int main() {
                 }
                 atime += time_inc;
                 sectime += time_inc;
-                delta = detect(buffer, rc);
+                delta = detect(buffer, rc, det_threshold, det_skips);
                 cnt += delta;
                 tcnt += delta;
                 delta_sum += delta;
                 if ( sectime >= 1 ) {
                         sectime = 0;
-                        if ( seccnt == SPAN ) { seccnt = 0; }
+                        if ( seccnt == span ) { seccnt = 0; }
                         cnt -= CNT[seccnt];
                         CNT[seccnt] = delta_sum;
-                        printf("Elapsed time: %3.1f    Counts %10lu    CPM %10.1f (estimated)      seccnt %3u    delta %10lu\n", atime, tcnt, ((double)cnt) * (60.0 / ((double)SPAN)), seccnt, delta_sum);
+                        printf("Elapsed time: %3.1f    Counts %10lu    CPM %10.1f (estimated)      seccnt %3u    delta %10lu\n", atime, tcnt, ((double)cnt) * (60.0 / (double)(span)), seccnt, delta_sum);
                         delta_sum = 0;
                         seccnt++;
                 }
@@ -166,7 +244,7 @@ int main() {
         return EXIT_SUCCESS;
 }
 
-unsigned long detect(char *buffer, int rc) {
+unsigned long detect(char *buffer, int rc, short det_threshold, int det_skips) {
         int k;
         int hit = FALSE;
         unsigned long cnt = 0;
@@ -183,13 +261,13 @@ unsigned long detect(char *buffer, int rc) {
                 /* printf("converted 2char to short: %i\n", conv.s);
                  * pause = getchar();
                  */
-                if ( ( conv.s <= DET_THRESHOLD ) & ( hit == FALSE ) ) {
+                if ( ( conv.s <= det_threshold ) & ( hit == FALSE ) ) {
                                 cnt = cnt + 1;
                                 hit = TRUE;
                                 skip = 0;
                                 /* printf("found a HIT!!! ==> %lu\n", cnt); */
                 } else {
-                        if ( skip == DET_SKIPS ) {
+                        if ( skip == det_skips ) {
                                 hit = FALSE;
                         } else {
                                 skip = skip + 1;
