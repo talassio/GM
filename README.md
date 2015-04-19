@@ -4,7 +4,7 @@ A pc monitoring interface for a Geiger-Müller particle detector.
 The testbed is an old unbranded device on which it was adapted and 1/8 mic jack to interface with
 a pc sound cards mic input.
 
-![testbed](https://github.com/talassio/GM/img/gmdevice.png)
+![testbed](https://github.com/talassio/GM/blob/master/img/gmdevice.png)
 
 ## Compiling
 Compilation is straight forward:
